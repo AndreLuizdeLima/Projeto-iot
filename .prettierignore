@@ -1,0 +1,7 @@
+node_modules
+dist
+package-lock.json
+.local
+PLANO.md
+infra/mosquitto/config/passwords
+infra/mosquitto/config/acl

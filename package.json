@@ -1,0 +1,27 @@
+{
+  "name": "projeto-iot",
+  "private": true,
+  "workspaces": [
+    "shared",
+    "backend",
+    "frontend",
+    "simulator"
+  ],
+  "engines": {
+    "node": ">=24 <27"
+  },
+  "scripts": {
+    "build": "npm run build -w @iot/contracts && npm run build -w backend && npm run build -w frontend",
+    "dev:backend": "npm run build -w @iot/contracts && npm run dev -w backend",
+    "dev:frontend": "npm run dev -w frontend",
+    "simulate": "npm run build -w @iot/contracts && npm run start -w simulator",
+    "test": "npm run build -w @iot/contracts && npm run test -w backend",
+    "typecheck": "npm run build -w @iot/contracts && npm run typecheck --workspaces --if-present",
+    "test:integration": "npm run build -w @iot/contracts && npm run build -w backend && npm run test:integration -w backend",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.6.2"
+  }
+}

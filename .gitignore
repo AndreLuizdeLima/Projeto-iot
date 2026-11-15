@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.local/
+coverage/
+*.log
+infra/mosquitto/config/passwords
+infra/mosquitto/config/acl
+infra/mosquitto/certs/*
+!infra/mosquitto/certs/.gitkeep
+.DS_Store

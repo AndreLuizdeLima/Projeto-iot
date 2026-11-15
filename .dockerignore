@@ -1,0 +1,9 @@
+.git
+**/node_modules
+**/dist
+.env
+.env.*
+.local
+infra/mosquitto/certs
+infra/mosquitto/config/passwords
+infra/mosquitto/config/acl

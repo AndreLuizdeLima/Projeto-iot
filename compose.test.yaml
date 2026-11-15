@@ -1,0 +1,24 @@
+# Ambiente exclusivo de testes; não utiliza .env nem volumes de produção.
+name: projeto-iot-test
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: iot_integration
+      POSTGRES_USER: iot_test
+      POSTGRES_PASSWORD: integration-only-password
+    ports:
+      - '127.0.0.1:15432:5432'
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U iot_test -d iot_integration]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    ports:
+      - '127.0.0.1:18884:1883'
+    volumes:
+      - ./.local/test-mqtt:/mosquitto/config:ro
