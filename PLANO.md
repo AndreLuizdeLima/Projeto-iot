@@ -12,11 +12,11 @@ Este documento será atualizado conforme definirmos os requisitos e as etapas de
 
 | Componente | Tecnologia | Responsabilidade |
 | --- | --- | --- |
-| Frontend | React | Realizar login, exibir os dados recebidos do backend e chamar a rota de enchimento. |
-| Backend | NestJS | Implementar a API, a autenticação, a identificação dos dispositivos e a integração com o broker MQTT. |
+| Frontend | React, Axios, Tailwind CSS e shadcn/ui | Realizar login, exibir os dados recebidos do backend e chamar a rota de enchimento. |
+| Backend | NestJS e TypeORM | Implementar a API, a autenticação, a identificação dos dispositivos e a integração com o broker MQTT. |
 | Broker MQTT | Eclipse Mosquitto | Receber e distribuir mensagens MQTT entre os dispositivos IoT e o backend. |
 | Banco de dados | PostgreSQL | Persistir usuários, dispositivos e o histórico de todas as comunicações MQTT com timestamps. |
-| Entrada web | Nginx | Servir o build React e encaminhar API e SSE para o NestJS via HTTPS. |
+| Entrada web | Nginx no host (systemd) | Encaminhar HTTPS ao frontend e à API/SSE, acessíveis apenas localmente. |
 | Conteinerização | Docker | Padronizar a execução dos serviços e facilitar o deploy. |
 
 O Eclipse Mosquitto é um broker MQTT de código aberto.
@@ -57,16 +57,17 @@ Também manterá os dados necessários para identificar e reconhecer cada dispos
 
 ### 4.1. Organização no servidor
 
-Executar os seguintes serviços no Docker Compose:
+O Nginx será instalado diretamente no servidor e executado via systemd. Sua configuração será versionada em `infra/nginx/iot.conf`; não haverá Nginx em Docker.
 
-| Serviço | Função | Acesso externo |
+| Serviço | Execução | Acesso |
 | --- | --- | --- |
-| `web` (Nginx) | Servir os arquivos compilados do React, terminar HTTPS e encaminhar `/api/` ao backend, incluindo SSE | TCP 80 e 443 |
-| `backend` (NestJS) | API, SSE e integração MQTT | Sem porta pública; acessado pelo Nginx na rede Docker |
-| `mosquitto` | Broker MQTT e autenticação do IoT | TCP 8883 com TLS para o dispositivo |
-| `postgres` | Usuários e histórico | Sem porta pública; acessado pelo backend na rede Docker |
+| Nginx | Host, systemd | Público, TCP 80 e 443 |
+| Frontend React compilado | Contêiner com servidor estático Node | `127.0.0.1:4173`, acessado pelo Nginx |
+| Backend NestJS | Contêiner | `127.0.0.1:3000`, acessado pelo Nginx |
+| PostgreSQL | Contêiner | Somente rede Docker, sem porta publicada |
+| Mosquitto | Contêiner | TCP 8883 público com TLS; 1883 apenas na rede Docker |
 
-O Nginx ficará no contêiner `web`, que também contém o build do frontend. Não será necessário instalar Nginx diretamente no sistema do servidor nem executar o servidor de desenvolvimento React em produção. O host precisará de Docker Engine, Compose e das configurações de DNS, firewall e acesso administrativo.
+O host precisará de Docker Engine, Compose, Git, Nginx e das configurações de DNS, firewall e certificados. Node.js 24 é utilizado pelos scripts de provisionamento. Os serviços são gerenciados com Docker Compose; o Nginx é gerenciado com `systemctl`.
 
 ### 4.2. Domínio e entradas públicas
 
@@ -101,9 +102,9 @@ Referências: [proxy HTTP do Nginx](https://nginx.org/en/docs/http/ngx_http_prox
 - Permitir que o frontend autentique o usuário e utilize o token nas requisições às rotas protegidas.
 - Armazenar no PostgreSQL apenas o hash da senha, nunca a senha em texto puro.
 - Utilizar `bcryptjs` para gerar e verificar o hash das senhas, com salt.
-- O JWT terá validade de 4 horas. O armazenamento do token e a renovação de sessão ainda serão detalhados.
+- O JWT terá validade de 4 horas, armazenado em cookie HttpOnly, SameSite=Strict e Secure em produção. A conexão SSE usa esse mesmo cookie; após expirar, fazer login novamente. Não haverá refresh token no MVP.
 - Os usuários serão mantidos no banco, sem tela de cadastro no frontend. O primeiro usuário será criado por uma rota de inicialização que gera o hash com `bcryptjs` e persiste o registro.
-- A rota de inicialização só poderá ser utilizada enquanto não houver usuários, com acesso restrito por segredo de configuração; detalhes de caminho e execução serão definidos na implementação. Inserções manuais posteriores também deverão conter apenas hashes, nunca senhas em texto puro.
+- A rota de inicialização só poderá ser utilizada enquanto não houver usuários, com acesso restrito por segredo de configuração; rota `POST /auth/bootstrap`, com script interativo `scripts/bootstrap-user.mjs`. Inserções manuais posteriores também deverão conter apenas hashes, nunca senhas em texto puro.
 
 ## 6. Funcionamento do dispositivo e responsabilidades
 
@@ -134,11 +135,11 @@ O estado da bomba informado pelo firmware representa o acionamento da saída de 
 
 ## 7. Contrato MQTT proposto — versão 1
 
-As definições abaixo são o contrato planejado para implementar o backend e o simulador antes do firmware C++. As mensagens serão JSON em UTF-8; os tipos TypeScript documentam o formato, e o backend deverá validar os dados em tempo de execução.
+O contrato executável está em `shared/src/index.ts`, utilizado pelo backend e pelo simulador. A documentação consolidada está em `docs/MQTT.md`. As mensagens serão JSON em UTF-8; os tipos TypeScript documentam o formato, e o backend deverá validar os dados em tempo de execução.
 
 ### 7.1. Identificação e tópicos
 
-O `deviceId` será estável, único e restrito a letras, números, hífen e sublinhado, sem curingas ou separadores MQTT. O identificador do payload deverá corresponder ao identificador do tópico e ao cadastro autorizado no backend.
+O `deviceId` será estável, único e restrito a letras, números, hífen e sublinhado, sem curingas ou separadores MQTT. O identificador do payload deverá corresponder ao identificador do tópico e ao identificador configurado no backend.
 
 | Tópico | Publicador → consumidor | Finalidade | QoS | Retain |
 | --- | --- | --- | --- | --- |
@@ -154,7 +155,7 @@ O dispositivo configurará uma mensagem de última vontade (LWT) `offline` e pub
 ```typescript
 type NivelAgua = 'com_agua' | 'sem_agua' | 'desconhecido';
 type StatusBomba = 'ligada' | 'desligada' | 'desconhecido';
-type StatusEnchimento = 'parado' | 'enchendo' | 'concluido' | 'falha';
+type StatusEnchimento = 'parado' | 'enchendo' | 'concluido' | 'falha' | 'desconhecido';
 type OrigemEnchimento = 'automatico' | 'manual';
 
 interface EstadoDispositivoV1 {
@@ -163,6 +164,7 @@ interface EstadoDispositivoV1 {
   bootId: string; // Novo identificador a cada inicialização.
   sequence: number; // Inteiro crescente dentro do mesmo bootId.
   uptimeMs: number; // Inteiro não negativo desde a inicialização.
+  generatedAt?: string; // ISO 8601, somente se o IoT tiver relógio sincronizado.
   sensor: {
     ativo: boolean | null; // null = leitura ainda indisponível.
     nivel: NivelAgua;
@@ -175,11 +177,11 @@ interface EstadoDispositivoV1 {
     cicloId: string | null;
     origem: OrigemEnchimento | null;
     commandId: string | null; // Preenchido somente para origem manual.
-    duracaoConfiguradaSegundos: number; // Inteiro positivo, definido no IoT.
-    tempoRestanteSegundos: number; // Inteiro entre 0 e a duração configurada.
+    duracaoConfiguradaSegundos?: number | null; // Opcional, definido no IoT.
+    tempoRestanteSegundos?: number | null; // Opcional, apenas informativo.
   };
   falha: {
-    codigo: 'LEITURA_SENSOR_INVALIDA' | 'TEMPO_ENCHIMENTO_INVALIDO' | 'FALHA_INTERNA';
+    codigo: string; // Código informado pelo dispositivo, limitado a 128 caracteres.
     mensagem: string;
   } | null;
 }
@@ -188,11 +190,11 @@ interface EstadoDispositivoV1 {
 Regras do payload:
 
 - `ativo: true` corresponde a `com_agua`; `false`, a `sem_agua`; `null`, a `desconhecido`. A conversão do sinal elétrico será feita no firmware.
-- `enchendo` exige bomba `ligada`, ciclo identificado, origem definida e tempo restante positivo.
-- Fora de `enchendo`, o tempo restante será zero e a bomba estará desligada ou com estado desconhecido.
+- O IoT informa o estado da bomba e do enchimento. A aplicação não impõe relações físicas entre esses campos nem exige contagem regressiva.
+- Tempos são opcionais; quando presentes, são inteiros não negativos. Zero pode representar configuração inválida junto de uma falha, sem impedir o registro da comunicação.
 - Antes do primeiro ciclo, usar `parado`, com `cicloId`, `origem` e `commandId` nulos. Ao concluir, manter a identificação do último ciclo até o próximo ciclo ou reinício.
 - Ciclos automáticos terão `commandId: null`. Ciclos manuais usarão o identificador do comando aceito.
-- `falha` no enchimento exige detalhes no campo `falha`. Não inferir defeito mecânico ou falta de fluxo sem hardware capaz de detectar isso.
+- Exibir os detalhes de falha quando fornecidos pelo IoT. Não inferir defeito mecânico ou falta de fluxo sem hardware capaz de detectar isso.
 - A frequência e os momentos de publicação serão definidos pelo IoT. O backend receberá e registrará as mensagens conforme chegarem, sem impor um intervalo de envio ao dispositivo.
 - Usar `bootId` e `sequence` para descartar duplicatas e estados antigos da mesma inicialização. Uma nova sessão deverá ser reconciliada com a disponibilidade e um estado atualizado do dispositivo.
 - O backend registrará `receivedAt` em UTC ao receber a mensagem. O contrato não exige relógio sincronizado no IoT; uma mensagem retida recebida após reconexão não comprova leitura atual.
@@ -247,7 +249,7 @@ interface ComandoEncherV1 {
 
 O comando não define tempo nem força a bomba a ligar. O IoT utiliza sua configuração local e suas condições de execução.
 
-- Encaminhar comandos apenas para uma sessão online com estado atualizado.
+- Encaminhar comandos quando o backend estiver conectado ao broker e houver último aviso online do dispositivo. Não decidir pelo nível ou pela idade da leitura; o IoT responderá se aceita ou rejeita. Um aviso online não garante conexão instantânea.
 - Não reter, não enfileirar para um dispositivo offline e não reenviar automaticamente após reconexão. Configurar a sessão de assinatura de comandos sem persistência entre conexões.
 - O IoT rejeitará um `targetBootId` diferente de sua inicialização atual.
 - QoS 1 pode gerar duplicatas: o IoT deverá reconhecer `commandId` repetido e devolver o resultado anterior, sem executar um novo ciclo nem reiniciar o temporizador. A retenção desses identificadores será definida na implementação.
@@ -261,18 +263,15 @@ interface BaseRespostaV1 {
   deviceId: string;
   bootId: string;
   commandId: string;
+  generatedAt?: string;
 }
 
 type RespostaComandoV1 = BaseRespostaV1 & (
   | { status: 'aceito'; cicloId: string }
   | {
       status: 'rejeitado';
-      motivo:
-        | 'JA_ENCHENDO'
-        | 'ENCHIMENTO_NAO_PERMITIDO'
-        | 'DISPOSITIVO_EM_FALHA'
-        | 'SESSAO_INVALIDA'
-        | 'COMANDO_INVALIDO';
+      motivo: string; // Ex.: JA_ENCHENDO, ENCHIMENTO_NAO_PERMITIDO, SESSAO_INVALIDA.
+      mensagem?: string;
     }
 );
 ```
@@ -323,7 +322,7 @@ O histórico cobre as mensagens efetivamente observadas ou enviadas pelo backend
 
 A interface sempre exibirá o último status conhecido, acompanhado do timestamp correspondente. Uma solicitação nova não apagará o estado atual nem fará a tela presumir que a bomba ligou. As respostas de aceitação ou rejeição serão persistidas e exibidas com seus horários, sem substituir indevidamente a telemetria da bomba.
 
-Como o contrato atual não exige relógio sincronizado no IoT, o horário exibido será identificado como “Recebido em”, usando `receivedAt`. O instante em que o status foi gerado no dispositivo só poderá ser apresentado como tal se o IoT fornecer um timestamp de origem confiável; isso permanece uma definição do contrato com o firmware.
+Como o contrato atual não exige relógio sincronizado no IoT, o horário exibido será identificado como “Recebido em”, usando `receivedAt`. Se o IoT enviar `generatedAt` com relógio sincronizado, a interface mostrará “Gerado em”, preservando também o horário de recebimento no banco.
 
 A ausência de resposta não inventará um novo estado da bomba: a tela continuará exibindo o último status e seu horário, diferenciando a situação da solicitação. Alterações nas respostas dos comandos também provocarão aviso SSE após persistência.
 
@@ -339,7 +338,7 @@ O SSE será utilizado para avisar o frontend de que existem dados novos. Os dado
 
 Os eventos serão enviados somente aos usuários autorizados a acessar o dispositivo. O frontend agrupará avisos próximos e evitará consultas simultâneas redundantes, garantindo uma nova consulta se houver aviso durante uma requisição em andamento.
 
-O SSE é um aviso de atualização; não aciona a bomba e não substitui a resposta da rota de enchimento. A frequência da telemetria continua sendo responsabilidade do IoT. O mecanismo de autenticação da conexão SSE será detalhado junto da sessão web.
+O SSE é um aviso de atualização; não aciona a bomba e não substitui a resposta da rota de enchimento. A frequência da telemetria continua sendo responsabilidade do IoT. A conexão SSE utiliza o mesmo cookie HttpOnly da API e é encerrada ao expirar o JWT.
 
 ## 9. Escopo inicial de implementação
 
@@ -359,14 +358,24 @@ O SSE é um aviso de atualização; não aciona a bomba e não substitui a respo
 
 | Tema | Decisão pendente |
 | --- | --- |
-| Comunicação | Prazo de leitura desatualizada, espera por resposta e política de deduplicação, considerando que a frequência de envio pertence ao IoT. |
-| Acesso MQTT | Detalhar o provisionamento consistente das duas contas, arquivo de senhas e ACLs. Portas: 8883 externo com TLS e 1883 apenas interno. |
-| Sessão web | Armazenamento do JWT de 4 horas, renovação ou novo login após expiração e autenticação da conexão SSE. |
-| Deploy | Informar domínio e IP reais; detalhar emissão/renovação dos certificados, segredos, redes e volumes. Nginx em Docker e entradas públicas 80, 443 e 8883. Sem backups no MVP. |
-| Horário de origem | Para exibir quando o status foi gerado no IoT, definir timestamp de origem e sincronização do relógio. Até lá, exibir o horário de recebimento explicitamente. |
+| Comunicação | Backend espera resposta por 15 segundos, configurável, sem mudar o estado da bomba ao vencer. A frequência pertence ao IoT. A política final de deduplicação no firmware permanece responsabilidade do dispositivo. |
+| Acesso MQTT | Executar `scripts/configure-mqtt.mjs` com os valores privados da env e provisionar o dispositivo. Arquivos de senhas e ACLs são gerados pelo script. |
+| Sessão web | Definida: cookie HttpOnly, JWT de 4 horas, SSE pelo mesmo cookie e novo login após expiração. |
+| Deploy | Informar domínio e IP reais; detalhar emissão/renovação dos certificados, segredos, redes e volumes. Nginx no host via systemd e entradas públicas 80, 443 e 8883. Sem backups no MVP. |
+| Horário de origem | Contrato aceita `generatedAt` opcional; a sincronização do relógio depende do firmware. Sem esse campo, exibir “Recebido em”. |
 
 ### Responsabilidades da etapa futura do firmware
 
 A duração da bomba, as tentativas automáticas, o comportamento na inicialização, a reação ao sensor durante o ciclo, a autorização de pedidos manuais e as proteções locais serão definidos no IoT. A escolha e a instalação do hardware também pertencem a essa etapa.
 
 Esses detalhes não bloqueiam a interface de comunicação. O contrato MQTT já permite ao dispositivo informar seus estados e aceitar ou rejeitar solicitações. O simulador exercitará ambos os resultados; os tempos e as condições usados na simulação serão apenas cenários de teste, sem definir as regras finais do hardware.
+
+## 11. Implementação do MVP
+
+A estrutura inicial de código inclui frontend React/Vite com Axios, Tailwind e componentes básicos do shadcn, backend NestJS com TypeORM e migrações versionadas, contratos compartilhados validados com Zod, simulador MQTT e arquivos Docker Compose. A documentação operacional está no `README.md`; o contrato HTTP e SSE está em `docs/API.md`.
+
+A rota de enchimento usa `Idempotency-Key` com UUID. A repetição da mesma solicitação não republica o comando. Respostas tardias do IoT atualizam solicitações sem resposta ou com envio não confirmado. Os eventos SSE são avisos para consultar a API, incluindo atualizações das solicitações.
+
+Esses arquivos preparam a execução no servidor, sem representar deploy já realizado ou validação do hardware físico.
+
+A raiz utiliza npm workspaces para organizar frontend, backend, contratos compartilhados e simulador com um único lockfile. O TypeORM mantém `synchronize: false`, utiliza entidades e repositórios e adota o esquema anterior sem recriar suas tabelas. O frontend mantém o JWT em cookie HttpOnly, centraliza requisições e erros com Axios e recebe os avisos SSE por `EventSource`. Os componentes do shadcn utilizam variantes padrão e Tailwind para o layout, substituindo o CSS específico das telas.
