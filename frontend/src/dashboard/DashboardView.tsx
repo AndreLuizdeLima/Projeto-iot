@@ -252,7 +252,7 @@ export function DashboardView({
           </>
         )}
         <footer className="text-xs text-muted-foreground">
-          Aqua · O painel preserva o último estado recebido.
+          Cisterna segura · O painel preserva o último estado recebido.
         </footer>
       </main>
     </div>

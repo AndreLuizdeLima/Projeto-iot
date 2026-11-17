@@ -2,9 +2,9 @@ import { Droplets } from 'lucide-react';
 
 export function Brand() {
   return (
-    <div className="flex items-center gap-2 font-semibold">
+    <div className="flex items-center gap-2 font-semibold text-primary">
       <Droplets className="size-5" aria-hidden="true" />
-      <span>Aqua</span>
+      <span>Cisterna segura</span>
     </div>
   );
 }
